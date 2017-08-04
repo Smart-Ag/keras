@@ -1,7 +1,6 @@
 from collections import defaultdict
 from contextlib import contextmanager
 import theano
-from theano import ifelse
 from theano import tensor as T
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 from theano.tensor.signal import pool
@@ -16,7 +15,7 @@ except ImportError:
     from theano.sandbox.softsign import softsign as T_softsign
 
 import numpy as np
-from .common import _FLOATX, floatx, _EPSILON, image_data_format
+from .common import floatx, epsilon, image_data_format
 from ..utils.generic_utils import has_arg
 # Legacy functions
 from .common import set_image_dim_ordering, image_dim_ordering
@@ -26,7 +25,7 @@ py_sum = sum
 
 
 # INTERNAL UTILS
-theano.config.floatX = _FLOATX
+theano.config.floatX = floatx()
 _LEARNING_PHASE = T.scalar(dtype='uint8', name='keras_learning_phase')  # 0 = test, 1 = train
 _UID_PREFIXES = defaultdict(int)
 
@@ -54,11 +53,11 @@ def get_uid(prefix=''):
         An integer.
 
     # Example
-    ```
+    ```python
         >>> keras.backend.get_uid('dense')
-        >>> 1
+        1
         >>> keras.backend.get_uid('dense')
-        >>> 2
+        2
     ```
 
     """
@@ -168,29 +167,39 @@ def constant(value, dtype=None, shape=None, name=None):
 def is_keras_tensor(x):
     """Returns whether `x` is a Keras tensor.
 
+    A "Keras tensor" is a tensor that was returned by a Keras layer,
+    (`Layer` class) or by `Input`.
+
     # Arguments
-        x: a potential tensor.
+        x: A candidate tensor.
 
     # Returns
-        A boolean: whether the argument is a Keras tensor.
+        A boolean: Whether the argument is a Keras tensor.
 
     # Raises
-        ValueError: in case `x` is not a symbolic tensor.
+        ValueError: In case `x` is not a symbolic tensor.
 
     # Examples
     ```python
         >>> from keras import backend as K
+        >>> from keras.layers import Input, Dense
         >>> np_var = numpy.array([1, 2])
         >>> K.is_keras_tensor(np_var) # A numpy array is not a symbolic tensor.
         ValueError
-        >>> k_var = theano.shared(value=np.array([1,2,3]))
-        >>> K.is_keras_tensor(k_var) # A variable created directly from tensorflow/theano is not a Keras tensor.
+        >>> k_var = tf.placeholder('float32', shape=(1,1))
+        >>> K.is_keras_tensor(k_var) # A variable indirectly created outside of keras is not a Keras tensor.
         False
         >>> keras_var = K.variable(np_var)
-        >>> K.is_keras_tensor(keras_var) # A variable created with the keras backend is a Keras tensor.
-        True
+        >>> K.is_keras_tensor(keras_var)  # A variable created with the keras backend is not a Keras tensor.
+        False
         >>> keras_placeholder = K.placeholder(shape=(2, 4, 5))
-        >>> K.is_keras_tensor(keras_placeholder)  # A placeholder is a Keras tensor.
+        >>> K.is_keras_tensor(keras_placeholder)  # A placeholder is not a Keras tensor.
+        False
+        >>> keras_input = Input([10])
+        >>> K.is_keras_tensor(keras_input) # An Input is a Keras tensor.
+        True
+        >>> keras_layer_output = Dense(10)(keras_input)
+        >>> K.is_keras_tensor(keras_layer_output) # Any Keras layer output is a Keras tensor.
         True
     ```
     """
@@ -854,7 +863,7 @@ def repeat_elements(x, rep, axis):
     return y
 
 
-def resize_images(X, height_factor, width_factor, data_format):
+def resize_images(x, height_factor, width_factor, data_format):
     """Resize the images contained in a 4D tensor of shape
     - [batch, channels, height, width] (for 'channels_first' data_format)
     - [batch, height, width, channels] (for 'channels_last' data_format)
@@ -862,18 +871,18 @@ def resize_images(X, height_factor, width_factor, data_format):
     positive integers.
     """
     if data_format == 'channels_first':
-        output = repeat_elements(X, height_factor, axis=2)
+        output = repeat_elements(x, height_factor, axis=2)
         output = repeat_elements(output, width_factor, axis=3)
         return output
     elif data_format == 'channels_last':
-        output = repeat_elements(X, height_factor, axis=1)
+        output = repeat_elements(x, height_factor, axis=1)
         output = repeat_elements(output, width_factor, axis=2)
         return output
     else:
         raise ValueError('Invalid data_format:', data_format)
 
 
-def resize_volumes(X, depth_factor, height_factor, width_factor, data_format):
+def resize_volumes(x, depth_factor, height_factor, width_factor, data_format):
     """Resize the volume contained in a 5D tensor of shape
     - [batch, channels, depth, height, width] (for 'channels_first' data_format)
     - [batch, depth, height, width, channels] (for 'channels_last' data_format)
@@ -881,12 +890,12 @@ def resize_volumes(X, depth_factor, height_factor, width_factor, data_format):
     Both factors should be positive integers.
     """
     if data_format == 'channels_first':
-        output = repeat_elements(X, depth_factor, axis=2)
+        output = repeat_elements(x, depth_factor, axis=2)
         output = repeat_elements(output, height_factor, axis=3)
         output = repeat_elements(output, width_factor, axis=4)
         return output
     elif data_format == 'channels_last':
-        output = repeat_elements(X, depth_factor, axis=1)
+        output = repeat_elements(x, depth_factor, axis=1)
         output = repeat_elements(output, height_factor, axis=2)
         output = repeat_elements(output, width_factor, axis=3)
         return output
@@ -1211,10 +1220,20 @@ def gradients(loss, variables):
 
 
 def stop_gradient(variables):
-    """Returns `variables` but with zero gradient with respect to every other
-    variables.
+    """Returns `variables` but with zero gradient w.r.t. every other variable.
+
+    # Arguments
+        variables: tensor or list of tensors to consider constant with respect
+            to any other variable.
+
+    # Returns
+        A single tensor or a list of tensors (depending on the passed argument)
+            that has constant gradient with respect to any other variable.
     """
-    return theano.gradient.disconnected_grad(variables)
+    if isinstance(variables, (list, tuple)):
+        return map(theano.gradient.disconnected_grad, variables)
+    else:
+        return theano.gradient.disconnected_grad(variables)
 
 
 # CONTROL FLOW
@@ -1502,29 +1521,29 @@ def softsign(x):
     return T_softsign(x)
 
 
-def categorical_crossentropy(output, target, from_logits=False):
+def categorical_crossentropy(target, output, from_logits=False):
     if from_logits:
         output = T.nnet.softmax(output)
     else:
         # scale preds so that the class probas of each sample sum to 1
         output /= output.sum(axis=-1, keepdims=True)
     # avoid numerical instability with _EPSILON clipping
-    output = T.clip(output, _EPSILON, 1.0 - _EPSILON)
+    output = T.clip(output, epsilon(), 1.0 - epsilon())
     return T.nnet.categorical_crossentropy(output, target)
 
 
-def sparse_categorical_crossentropy(output, target, from_logits=False):
+def sparse_categorical_crossentropy(target, output, from_logits=False):
     target = T.cast(T.flatten(target), 'int32')
     target = T.extra_ops.to_one_hot(target, nb_class=output.shape[-1])
     target = reshape(target, shape(output))
-    return categorical_crossentropy(output, target, from_logits)
+    return categorical_crossentropy(target, output, from_logits)
 
 
-def binary_crossentropy(output, target, from_logits=False):
+def binary_crossentropy(target, output, from_logits=False):
     if from_logits:
         output = T.nnet.sigmoid(output)
     # avoid numerical instability with _EPSILON clipping
-    output = T.clip(output, _EPSILON, 1.0 - _EPSILON)
+    output = T.clip(output, epsilon(), 1.0 - epsilon())
     return T.nnet.binary_crossentropy(output, target)
 
 
@@ -1573,9 +1592,9 @@ def dropout(x, level, noise_shape=None, seed=None):
     return x
 
 
-def l2_normalize(x, axis, epsilon=1e-12):
+def l2_normalize(x, axis=None):
     square_sum = T.sum(T.square(x), axis=axis, keepdims=True)
-    norm = T.sqrt(T.maximum(square_sum, epsilon))
+    norm = T.sqrt(T.maximum(square_sum, epsilon()))
     return x / norm
 
 
@@ -1894,8 +1913,8 @@ def conv2d_transpose(x, kernel, output_shape, strides=(1, 1),
 
     if padding == 'same' and kernel_shape[0] % 2 == 0:
         raise ValueError('In `Conv2DTranspose`, with padding mode `same`, '
-                         'even kernel sizes are only supported with Tensorflow. '
-                         'With Theano, set `kernel_size` to an odd number.')
+                         'even kernel sizes are not supported with Theano. '
+                         'You can set `kernel_size` to an odd number.')
 
     kernel_shape = _preprocess_conv2d_filter_shape(kernel_shape, data_format)
 
@@ -2005,8 +2024,8 @@ def conv3d_transpose(x, kernel, output_shape, strides=(1, 1, 1),
 
     if padding == 'same' and kernel_shape[0] % 2 == 0:
         raise ValueError('In `Conv3DTranspose`, with padding mode `same`, '
-                         'even kernel sizes are only supported with Tensorflow. '
-                         'With Theano, set `kernel_size` to an odd number.')
+                         'even kernel sizes are not supported with Theano. '
+                         'You can set `kernel_size` to an odd number.')
 
     kernel_shape = _preprocess_conv3d_filter_shape(kernel_shape, data_format)
 
@@ -2355,9 +2374,8 @@ def foldl(fn, elems, initializer=None, name=None):
 
     # We need to change the order of the arguments because theano accepts x as
     # first parameter and accumulator as second
-    fn2 = lambda x, acc: fn(acc, x)
-
-    return theano.foldl(fn2, elems, initializer, name=name)[0]
+    return theano.foldl(lambda x, acc: fn(acc, x),
+                        elems, initializer, name=name)[0]
 
 
 def foldr(fn, elems, initializer=None, name=None):
@@ -2379,9 +2397,8 @@ def foldr(fn, elems, initializer=None, name=None):
 
     # We need to change the order of the arguments because theano accepts x as
     # first parameter and accumulator as second
-    fn2 = lambda x, acc: fn(acc, x)
-
-    return theano.foldr(fn2, elems, initializer, name=name)[0]
+    return theano.foldr(lambda x, acc: fn(acc, x),
+                        elems, initializer, name=name)[0]
 
 
 def local_conv1d(inputs, kernel, kernel_size, strides, data_format=None):
@@ -2449,5 +2466,4 @@ def local_conv2d(inputs, kernel, kernel_size, strides, output_shape, data_format
         output = reshape(output,
                          (output_row, output_col, -1, filters))
         output = permute_dimensions(output, (2, 0, 1, 3))
-
     return output
